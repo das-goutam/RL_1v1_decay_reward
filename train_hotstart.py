@@ -8,6 +8,7 @@ import argparse
 import torch
 import numpy as np
 from datetime import datetime
+import sys
 
 # Import everything from your main code
 from train_1v1_decay_reward import (
@@ -24,17 +25,15 @@ def find_latest_model(model_prefix, model_dir='models'):
         model_dir: Directory containing model files
         
     Returns:
-        Path to the latest model file, or None if no models found
+        Tuple of (model_path, episode_num) or (None, None) if no models found
     """
     if not os.path.exists(model_dir):
-        print(f"Model directory {model_dir} does not exist")
-        return None
+        return None, None
         
     model_files = [f for f in os.listdir(model_dir) if f.startswith(model_prefix) and f.endswith('.pt')]
     
     if not model_files:
-        print(f"No models with prefix {model_prefix} found in {model_dir}")
-        return None
+        return None, None
     
     # Sort by modification time to get the latest model
     model_files.sort(key=lambda x: os.path.getmtime(os.path.join(model_dir, x)), reverse=True)
@@ -43,15 +42,29 @@ def find_latest_model(model_prefix, model_dir='models'):
     # Extract the episode number if possible (for reporting)
     episode_num = None
     try:
-        # Try to find episode number in filename (e.g., attacker_agent_20240304_episode_2000.pt)
-        parts = model_files[0].split('_')
-        for i, part in enumerate(parts):
-            if part == 'episode' and i < len(parts) - 1:
-                episode_num = int(parts[i+1])
-                break
-    except:
-        pass
+        # Use regex to extract episode number which is more reliable
+        import re
+        match = re.search(r'episode_(\d+)', model_files[0])
+        if match:
+            episode_num = int(match.group(1))
+            print(f"Extracted episode number: {episode_num} from filename using regex")
+        else:
+            # Fallback to splitting method
+            filename = model_files[0]
+            print(f"Attempting to extract episode number from: {filename}")
+            parts = filename.split('_')
+            for i, part in enumerate(parts):
+                if part == 'episode' and i < len(parts) - 1:
+                    try:
+                        episode_num = int(parts[i+1].split('.')[0])  # Handle potential .pt extension
+                        print(f"Extracted episode number: {episode_num} from filename using split")
+                        break
+                    except ValueError:
+                        print(f"Could not convert '{parts[i+1]}' to integer")
+    except Exception as e:
+        print(f"Warning: Could not extract episode number from filename. Error: {e}")
     
+    print(f"Found model: {model_files[0]}, extracted episode: {episode_num}")
     return latest_model_path, episode_num
 
 def load_model_to_agent(agent, model_path):
@@ -111,6 +124,27 @@ def load_model_to_agent(agent, model_path):
         print(f"Error loading model: {e}")
         return False
 
+def print_hotstart_help_message(model_dir):
+    """Print a helpful message about how to add models for hot-starting"""
+    print("\n" + "="*80)
+    print("HOT-START HELP")
+    print("="*80)
+    print(f"You requested hot-start training, but no suitable models were found in '{model_dir}'.")
+    print("\nTo use hot-start training, you need to:")
+    print(f"1. Ensure the '{model_dir}' directory exists and contains trained model files")
+    print("2. Model files should follow the naming convention:")
+    print("   - attacker_agent_[timestamp]_episode_[number].pt")
+    print("   - defender_agent_[timestamp]_episode_[number].pt")
+    print("\nYou can either:")
+    print("   a) Run training without hot-start first to generate initial models:")
+    print("      python train_hotstart.py --episodes 2000 --no-hotstart")
+    print("\n   b) Manually place pre-trained models in the models directory")
+    print("\n   c) Specify a different models directory:")
+    print("      python train_hotstart.py --episodes 5000 --model_dir /path/to/models")
+    print("\nIf you want to start training from scratch instead, use:")
+    print("   python train_hotstart.py --episodes 5000 --no-hotstart")
+    print("="*80 + "\n")
+
 def main():
     """Main function to set up and run dual-agent training with hot-start capability"""
     # Parse command line arguments
@@ -128,6 +162,7 @@ def main():
     parser.add_argument('--no-hotstart', dest='hotstart', action='store_false', help='Disable hot-start')
     parser.add_argument('--seed', type=int, default=RANDOM_SEED, help='Random seed')
     parser.add_argument('--gpu', type=int, default=0, help='GPU ID to use')
+    parser.add_argument('--force', action='store_true', help='Force training without hot-start even if models not found')
     parser.set_defaults(hotstart=True)  # Default to using hot-start
     
     args = parser.parse_args()
@@ -193,6 +228,20 @@ def main():
     if args.hotstart:
         print("Looking for latest models to hot-start training...")
         
+        # Check if model directory exists
+        if not os.path.exists(args.model_dir):
+            print(f"Model directory '{args.model_dir}' does not exist.")
+            os.makedirs(args.model_dir, exist_ok=True)
+            print(f"Created directory '{args.model_dir}'")
+            
+            if not args.force:
+                print_hotstart_help_message(args.model_dir)
+                print("Use --force flag to start training from scratch anyway.")
+                sys.exit(1)
+            else:
+                print("Force flag detected. Starting training from scratch despite no models found.")
+                args.hotstart = False
+        
         # Find latest attacker and defender models
         attacker_model_path, attacker_episode = find_latest_model('attacker_agent_', args.model_dir)
         defender_model_path, defender_episode = find_latest_model('defender_agent_', args.model_dir)
@@ -214,9 +263,25 @@ def main():
                     starting_episode = min(attacker_episode, defender_episode)
                     print(f"Continuing from episode {starting_episode}")
             else:
-                print("Failed to load one or both models. Starting training from scratch.")
+                print("Failed to load one or both models.")
+                
+                if not args.force:
+                    print_hotstart_help_message(args.model_dir)
+                    print("Use --force flag to start training from scratch anyway.")
+                    sys.exit(1)
+                else:
+                    print("Force flag detected. Starting training from scratch.")
+                    starting_episode = 0
         else:
-            print("No existing models found. Starting training from scratch.")
+            print("No existing models found in the specified directory.")
+            
+            if not args.force:
+                print_hotstart_help_message(args.model_dir)
+                print("Use --force flag to start training from scratch anyway.")
+                sys.exit(1)
+            else:
+                print("Force flag detected. Starting training from scratch.")
+                starting_episode = 0
     else:
         print("Hot-start disabled. Starting training from scratch.")
     
@@ -247,6 +312,10 @@ def main():
         print(f"Already trained for {starting_episode} episodes, which is >= the requested {args.episodes}.")
         print("Nothing to do. If you want to train more, increase the --episodes parameter.")
         return
+        
+    print(f"Goal: Train for a total of {args.episodes} episodes")
+    print(f"Already completed: {starting_episode} episodes")
+    print(f"Remaining: {remaining_episodes} episodes")
     
     # Start training
     print(f"Starting dual-agent training for {remaining_episodes} more episodes...")
