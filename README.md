@@ -109,14 +109,12 @@ python test_1v1.py --attacker_model models/attacker_agent_20240304_episode_2000.
 | `--render` | Enable visualization | True |
 | `--no-render` | Disable visualization | - |
 | `--gamma` | Defender speed relative to attacker | 0.5 |
-| `--rho` | Capture radius parameter | 1.0 |
 | `--attacker_model` | Specific attacker model to load | (latest) |
 | `--defender_model` | Specific defender model to load | (latest) |
 
 ## Environment Parameters
 
 - `gamma`: Defender speed relative to attacker (0 < gamma < 1)
-- `rho`: Capture radius parameter
 - `dt`: Time step for simulation
 - `r_capture`: Capture radius for the defender
 
